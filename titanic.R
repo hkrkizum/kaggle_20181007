@@ -2,6 +2,9 @@ library(tidyverse)
 library(mice)
 library(caret)
 library(xgboost)
+library(doParallel)
+detectCores()
+registerDoParallel(makePSOCKcluster(8))
 
 # Get rawdata --------------------------------------------------------------------
 titanic_original <- read_csv("Rawdata/train.csv")
@@ -34,6 +37,7 @@ rawdata <- data.table::data.table(titanic_omit_NA)
 str(rawdata)
 table(rawdata$Sex)
 table(rawdata$Embarked)
+rawdata$Survived <- as.factor(rawdata$Survived)
 
 # str Sex to numetric: male 1, female 0 
 rawdata[Sex=="male",Sex:="1"]
@@ -67,13 +71,71 @@ grid <- expand.grid(nrounds = 500,
                     subsample = 1)
 
 #XGboostでパラメタチューニング
-xgb.tune <- train(Old ~ .,
-                  data = awabi_test,
+xgb.tune <- train(Survived ~ .,
+                  data = rawdata_train,
                   method = "xgbTree",
                   metric = "Accuracy",
                   trControl = ctrl,
                   tuneGrid = grid)
 
+
+plot(xgb.tune)  
 xgb.tune$bestTune
-nrounds max_depth  eta gamma colsample_bytree min_child_weight subsample
-6     500         9 0.01     0                1                1         1
+result <- xgb.tune$results
+round(result, 2) %>% 
+    dplyr::filter(max_depth == 8)
+
+xgb.pred <- predict(xgb.tune, rawdata_test)
+confusionMatrix(data = xgb.pred,
+                reference = rawdata_test$Survived,
+                dnn = c("Prediction", "Actual"),
+                mode = "prec_recall")
+
+# TEST -----------------------------------------------------------------------------
+titanic_test <- read_csv("Rawdata/test.csv") %>% as.data.frame()
+dim(titanic_test)
+colnames(titanic_test)
+row.names(titanic_test) <- titanic_test$PassengerId
+
+md.pattern(titanic_test)
+
+titanic_test[is.na(titanic_test$Fare),]
+titanic_test[is.na(titanic_test$Age),]
+
+titanic_test[titanic_test$Ticket == 3701,]
+titanic_test %>% 
+    dplyr::select(-c(PassengerId, Cabin, Name)) -> tmp
+
+# PassengerID（乗客ID）,Name（名前）,Ticket（チケット番号）,Cabin（部屋番号）を除外
+titanic_test_omit_varv <- titanic_test[, -c(1, 3, 8, 10)]
+md.pattern(titanic_test_omit_varv)
+
+tempData <- mice(titanic_test_omit_varv, method="pmm", m=5)
+summary(tempData)
+
+titanic_test_omit_varv <- mice::complete(tempData, 1)
+md.pattern(titanic_omit_NA)
+dim(titanic_test_omit_varv)
+
+# Change data.frame to data.table 
+testdata <- data.table::data.table(titanic_test_omit_varv)
+str(testdata)
+table(testdata$Sex)
+table(testdata$Embarked)
+
+# str Sex to numetric: male 1, female 0 
+testdata[Sex=="male",Sex:="1"]
+testdata[Sex=="female",Sex:="2"]
+testdata$Sex <- as.numeric(testdata$Sex)
+
+# str Sex to numetric: male 1, female 0
+testdata[Embarked=="S",Embarked:="1"]
+testdata[Embarked=="Q",Embarked:="2"]
+testdata[Embarked=="S",Embarked:="3"]
+
+# Get predict data 
+testdata_xgb.pred <- predict(xgb.tune, testdata)
+testdata_xgb.pred
+
+tmp <- data.frame(PassengerID = titanic_test$PassengerId, Survived = testdata_xgb.pred)
+write.csv(tmp, file = 'Result/xgboostmodel.csv', row.names = F)
