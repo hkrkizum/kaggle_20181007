@@ -230,6 +230,21 @@ index <- sample(n_rows, floor(0.8 * nrow(rawdata)))
 rawdata_train <- rawdata[index,] #90%の学習データ
 rawdata_test <- rawdata[-index,] 
 
+str(rawdata)
+rawdata_train %>% 
+    dplyr::select(-Fname) -> rawdata_train
+tmp1 <- dummyVars(~., data = rawdata_train)
+tmp2 <- as.data.frame(predict(tmp1, rawdata_train))
+tmp2 %>% 
+    dplyr::select(-Survived.0,-Survived.1) -> tmp2
+tmp2$Survived <- rawdata_train$Survived
+rawdata_train <- tmp2
+
+rawdata_test %>% 
+    dplyr::select(-Fname) -> rawdata_test
+tmp1 <- dummyVars(~., data = rawdata_test)
+tmp2 <- as.data.frame(predict(tmp1, rawdata_test))
+rawdata_test <- tmp2
 
 # manual run
 # y <- as.numeric(rawdata_train$Survived) -1
@@ -267,8 +282,8 @@ grid <- expand.grid(nrounds = 500,
 # 並列化実行
 t<-proc.time()
 
-# cl <- makeCluster(detectCores()) 
-# registerDoParallel(cl)
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
 
 #XGboostでパラメタチューニング
 xgb.tune <- train(Survived ~ .,
@@ -279,7 +294,7 @@ xgb.tune <- train(Survived ~ .,
                   tuneGrid = grid,
                   verbose = TRUE)
 
-# stopCluster(cl)
+stopCluster(cl)
 proc.time()-t
 
 
