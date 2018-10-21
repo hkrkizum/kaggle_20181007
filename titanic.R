@@ -6,7 +6,7 @@ library(randomForest)
 library(stringr)
 library(doParallel)
 detectCores()
-registerDoParallel(makePSOCKcluster(8))
+registerDoParallel(makePSOCKcluster(4))
 
 # Get rawdata --------------------------------------------------------------------
 titanic_original <- read_csv("Rawdata/train.csv") %>% data.table::data.table()
@@ -244,6 +244,9 @@ rawdata_test %>%
     dplyr::select(-Fname) -> rawdata_test
 tmp1 <- dummyVars(~., data = rawdata_test)
 tmp2 <- as.data.frame(predict(tmp1, rawdata_test))
+tmp2 %>% 
+    dplyr::select(-Survived.0,-Survived.1) -> tmp2
+tmp2$Survived <- rawdata_test$Survived
 rawdata_test <- tmp2
 
 # manual run
@@ -272,18 +275,13 @@ ctrl <- trainControl(method = "cv",
                      verboseIter = TRUE)
 
 #格子探索用のグリッド
-grid <- expand.grid(nrounds = 500, 
-                    eta = seq(0.01, 0.4, 0.01), 
-                    max_depth = 4:10,
-                    gamma = c(0,3,10),
-                    colsample_bytree = 1,
-                    min_child_weight = 1,
-                    subsample = 1)
-# 並列化実行
-t<-proc.time()
-
-cl <- makeCluster(detectCores())
-registerDoParallel(cl)
+grid <- expand.grid(nrounds = 1000, 
+                    eta = 0.05, 
+                    max_depth = 8,
+                    gamma = 0.8,
+                    colsample_bytree = seq(0.6,1, 0.05),
+                    min_child_weight = 6,
+                    subsample = seq(0.6,1, 0.05))
 
 #XGboostでパラメタチューニング
 xgb.tune <- train(Survived ~ .,
@@ -294,16 +292,11 @@ xgb.tune <- train(Survived ~ .,
                   tuneGrid = grid,
                   verbose = TRUE)
 
-stopCluster(cl)
-proc.time()-t
-
-
-
 plot(xgb.tune)  
 xgb.tune$bestTune
 result <- xgb.tune$results
 round(result, 2) %>% 
-    dplyr::filter(max_depth == 5 & eta == 0.36)
+    dplyr::filter(max_depth == 8)
 
 xgb.pred <- predict(xgb.tune, rawdata_test)
 confusionMatrix(data = xgb.pred,
@@ -311,28 +304,58 @@ confusionMatrix(data = xgb.pred,
                 dnn = c("Prediction", "Actual"),
                 mode = "prec_recall")
 
+
+
+# Get predict data 
+testdata %>% 
+    dplyr::select(-Fname) -> x
+tmp1 <- dummyVars(~., data = x)
+tmp2 <- as.data.frame(predict(tmp1, x))
+# tmp2 %>% 
+#     dplyr::select(-Survived.0,-Survived.1) -> tmp2
+# tmp2$Survived <- rawdata_test$Survived
+x <- tmp2
+
 str(rawdata_train)
-rawdata_train
-x <- as.matrix(rawdata_train[, -1])
-bst <- xgboost(data = x,
-               label = as.numeric(rawdata_train$Survived) -1,
-               max.depth = 5,
-               eta = 0.36,
+str(x)
+str(rawdata)
+y <- rawdata
+y %>% 
+    dplyr::select(-Fname) -> y
+tmp1 <- dummyVars(~., data = y)
+tmp2 <- as.data.frame(predict(tmp1, y))
+tmp2 %>% 
+    dplyr::select(-Survived.0,-Survived.1) -> tmp2
+# tmp2$Survived <- rawdata$Survived
+y <- tmp2
+str(y)
+y <- as.matrix(y)
+# x <- as.matrix(rawdata_train[, -1])
+bst <- xgboost(data = y,
+               label = as.numeric(rawdata$Survived) -1,
+               max.depth = 8,
+               eta = 0.05,
+               gamma = 0.8,
+               colsample_bytree = 0.75,
+               min_child_weight =6,
+               subsample = 0.8,
                nthread = 8,
-               nrounds = 10,
+               nrounds = 1000,
                objective = "multi:softmax",
                num_class = 2)
-tmp <- predict(bst, as.matrix(rawdata_test[,-1]))
 
-confusionMatrix(data = as.factor(tmp),
-                reference = rawdata_test$Survived,
-                dnn = c("Prediction", "Actual"),
-                mode = "prec_recall")
+tmp <- predict(bst, as.matrix(x))
+
+# confusionMatrix(data = as.factor(tmp),
+#                 reference = rawdata_test$Survived,
+#                 dnn = c("Prediction", "Actual"),
+#                 mode = "prec_recall")
 xgb.importance(model = bst)
-# Get predict data 
+
+
 testdata_xgb.pred <- predict(xgb.tune, testdata)
 testdata_xgb.pred
 
-tmp <- data.frame(PassengerID = titanic_test$PassengerId, Survived = testdata_xgb.pred)
+tmp <- data.frame(PassengerID = titanic_test$PassengerId, Survived = tmp)
 head(tmp)
 write.csv(tmp, file = 'Result/xgboostmodel_4.csv', row.names = F)
